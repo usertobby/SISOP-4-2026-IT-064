@@ -1,0 +1,89 @@
+services:
+
+  # Service setup: buat direktori + atur permission host, lalu exit
+  setup:
+    image: ubuntu:22.04
+    container_name: libraryit-setup
+    volumes:
+      # Mount seluruh ./data tanpa :ro agar bisa chmod semua subfolder
+      - ./data:/data
+    command: >
+      bash -c "
+        mkdir -p /data/ebooks /data/papers /data/sourcecode /data/docs &&
+        chmod 775 /data/ebooks &&
+        chmod 775 /data/papers &&
+        chmod 750 /data/sourcecode &&
+        chmod 555 /data/docs &&
+        echo '[setup] Direktori dan permission host siap.'
+      "
+    restart: "no"
+
+  libraryit-server:
+    build: .
+    container_name: libraryit-server
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    ports:
+      - "1445:445"
+    volumes:
+      - ./data/ebooks:/data/ebooks
+      - ./data/papers:/data/papers
+      - ./data/sourcecode:/data/sourcecode
+      - ./data/docs:/data/docs:ro     # docs: read-only dari host agar tidak bisa diubah langsung
+      - samba_logs:/var/log/samba     # Log share antara server dan logger
+    restart: unless-stopped
+
+  libraryit-logger:
+    image: ubuntu:22.04
+    container_name: libraryit-logger
+    depends_on:
+      - libraryit-server
+    volumes:
+      - samba_logs:/var/log/samba:ro
+    command: >
+      bash -c "
+        LOG=/var/log/samba/libraryit.log;
+        echo 'LibraryIT Logger started. Waiting for log file...';
+        while [ ! -f \$$LOG ]; do sleep 1; done;
+        echo 'Log file found. Monitoring...';
+        tail -F \$$LOG 2>/dev/null | while IFS= read -r line; do
+          TIMESTAMP=\$$(date '+%Y-%m-%d %H:%M:%S');
+
+          if echo \"\$$line\" | grep -q 'smbd_audit:'; then
+            USER=\$$(echo \"\$$line\" | sed 's/.*smbd_audit: //; s/|.*//')
+            OP=\$$(echo \"\$$line\" | awk -F'|' '{print toupper(\$$4)}')
+            PATH_=\$$(echo \"\$$line\" | awk -F'|' '{print \$$NF}' | sed 's|.*/data/||; s|/data/||')
+            RESULT=\$$(echo \"\$$line\" | awk -F'|' '{print \$$5}')
+
+            if [ \"\$$RESULT\" = 'ok' ] || [ \"\$$RESULT\" = 'NT_STATUS_OK' ]; then
+              LEVEL='INFO';
+            else
+              LEVEL='WARNING';
+            fi
+
+            case \"\$$OP\" in
+              CONNECT)    AKSI='CONNECT'     ;;
+              DISCONNECT) AKSI='DISCONNECT'  ;;
+              OPEN)       AKSI='READ'        ;;
+              WRITE)      AKSI='WRITE'       ;;
+              UNLINK)     AKSI='DELETE'      ;;
+              MKDIR)      AKSI='MKDIR'       ;;
+              RMDIR)      AKSI='RMDIR'       ;;
+              RENAME)     AKSI='RENAME'      ;;
+              *)          AKSI=\"\$$OP\"       ;;
+            esac
+
+            SHARE=\$$(echo \"\$$PATH_\" | cut -d'/' -f1)
+            [ -z \"\$$SHARE\" ] && SHARE='unknown'
+            [ -z \"\$$PATH_\" ] && PATH_=\"\$$SHARE\"
+
+            echo \"[\$$TIMESTAMP] [\$$LEVEL] [\$$USER] [\$$AKSI] [\$$PATH_]\";
+          fi
+        done
+      "
+    restart: unless-stopped
+
+volumes:
+  samba_logs:
+    driver: local
