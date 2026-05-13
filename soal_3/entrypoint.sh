@@ -38,7 +38,7 @@ chmod 775 /data/papers
 
 # sourcecode: hanya owner+grup staff, others tidak bisa sama sekali
 chown root:staff /data/sourcecode
-chmod 770 /data/sourcecode
+chmod 750 /data/sourcecode
 
 # docs: chown/chmod dilakukan oleh service 'setup' di docker-compose
 # karena di sini di-mount :ro — tidak bisa dimodifikasi dari dalam container
