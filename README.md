@@ -378,6 +378,8 @@ Beberapa hal yang perlu diperhatikan:
 
 - Program client.c untuk berinteraksi dengan server melalui TCP socket.
 
+- Terdapat file `server` dan file `notes.csv.enc` yang disediakan oleh soal yang mana akan berguna saat melakukan testing nanti.
+
 ### fuse.c
 
 #### Variabel Global & Konstanta
@@ -752,3 +754,107 @@ return 0;
 Menutup socket dan keluar, membebaskan resource socket.
 
 ### Uji Coba
+Buat folder yang diperlukan terlebih dahulu dengan:
+```bash
+mkdir -p encrypted_storage
+mkdir -p fuse_mount
+```
+
+Di sini untuk mengecek apakah fuse berhasil kedepannya, kita buat direktori baru "tests" dalam folder `encrypted_storage` dengan file `notes.csv.enc` yang disediakan oleh soal.  
+![image](assets/soal_2/tests-tree.png)
+
+Setelah itu, compile file ``fuse.c`` dengan menggunakan:
+```bash
+gcc -Wall fuse.c `pkg-config fuse --cflags --libs` -o fuse
+```
+
+Kemudian, mounting menggunakan: (**PASTIKAN FOLDER `fuse_mount` KOSONG**)
+```bash
+./fuse -f fuse_mount -o allow_other &
+```
+![image](assets/soal_2/mounting.png)
+
+Apabila sudah selesai, unmount dengan menggunakan:
+```bash
+fusermount -u fuse_mount
+```
+Atau bisa juga dengan:
+```bash
+umount fuse_mount
+```
+
+Untuk mengecek `fuse_mount` gunakan:
+```bash
+mount -f | grep fuse_mount
+```
+![image](assets/soal_2/grep-fuse-mount.png)
+
+Coba **add** file di `fuse_mount/`  
+![image](assets/soal_2/add-file-fuse-mount.png)
+
+Coba **cat** file di `encrypted_storage/`  
+![image](assets/soal_2/cat-file-enc.png)
+
+Coba **cat** file di `fuse_mount/`  
+![image](assets/soal_2/cat-file-fuse-mount.png)
+
+Kemudian untuk docker containerization, unmount terlebih dahulu `fuse_mount` baru jalankan:
+```bash
+sudo docker build -t soal-2-modul-4-sisop .
+```
+![image](assets/soal_2/docker-build.png)
+
+Container integration (bind mount):
+```bash
+sudo docker run -d --name db_app -p 9000:9000 -v $(pwd)/fuse_mount:/app/db soal-2-modul-4-sisop
+```
+![image](assets/soal_2/docker-run.png)
+
+cek docker imagesnya:
+```bash
+sudo docker images
+```
+![image](assets/soal_2/docker-images.png)
+
+cek apakah db_app nya udah up:
+```bash
+sudo docker ps -a
+```
+![image](assets/soal_2/docker-ps-a.png)
+
+Selanjutnya, compile file ``client.c`` dengan menggunakan:
+```bash
+gcc client.c -o client
+```
+
+Lalu, jalankan dengan:
+```bash
+./client
+```
+![image](assets/soal_2/client.png)
+
+notes:  
+---
+Untuk mematikan (Stop) sementara:  
+```bash
+sudo docker stop db_app
+```
+
+Untuk menyalakan kembali (Start):  
+```bash
+sudo docker start db_app
+```
+
+Untuk menghapus kontainer sepenuhnya (misalnya mau bind mount ulang atau ada error):  
+```bash
+sudo docker rm -f db_app
+```
+
+---
+
+Apabila bind mount error, konfigurasi FUSE dengan nano untuk izinkan akses dengan:
+```bash
+sudo nano /etc/fuse.conf
+```
+lalu cari tulisan `#user_allow_other`.  
+dan hapus tanda pagar (`#`) di depannya, dan coba container integration (bind mount) lagi.
