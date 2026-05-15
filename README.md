@@ -330,7 +330,51 @@ Argumen digeser karena FUSE hanya memerlukan:
 Setelah itu, ``fuse_main(argc, argv, &xmp_oper, NULL)`` akan memulai seluruh callback FUSE. Ketika filesystem aktif, kernel akan memanggil *getattr*, *readdir*, *open*, dan *read* secara otomatis sesuai aktivitas pengguna.
 
 ### Uji Coba
+Buat folder mkdir terlebih dahulu dengan ``mkdir mnt``. Setelah itu, compile file ``kenz_rescue.c`` dengan menggunakan:
+```bash
+gcc kenz_rescue.c `pkg-config fuse3 --cflags --libs` -o kenz_rescue
+```
 
+Kemudian, mounting menggunakan:
+```bash
+./kenz_rescue amba_files mnt
+```
+
+---
+
+Apabila sudah selesai, unmount dengan menggunakan:
+```bash
+fusermount3 -u mnt
+```
+Atau bisa juga dengan:
+```bash
+umount mnt
+```
+
+---
+
+Coba ``ls mnt``  
+![image](assets/soal_1/ls-mnt.png)
+
+Coba ``cat mnt/1.txt``  
+![image](assets/soal_1/cat-1-txt.png)
+
+Coba jalankan untuk testing passthrough:
+```bash
+for i in 1 2 3 4 5 6 7; do
+    diff mnt/$i.txt amba_files/$i.txt && echo "$i.txt OK"
+done
+```
+![image](assets/soal_1/test-passthrough.png)
+
+Perbedaan antara ``ls mnt`` dengan ``ls amba_files``  
+![image](assets/soal_1/difference-mnt-amba-files.png)
+
+Temukan koordinat ritual dengan ``cat mnt/tujuan.txt``  
+![image](assets/soal_1/cat-stat-tujuan-txt.png)
+
+Struktur akhir:
+![image](assets/soal_1/tree.png)
 
 ## Soal 2 - Poke MOO
 Pada soal ini diminta untuk
