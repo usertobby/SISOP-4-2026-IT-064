@@ -14,6 +14,12 @@
     - [Dockerfile](#dockerfile)  
     - [client.c](#clientc)  
     - [Uji Coba](#uji-coba-1)  
+- [Soal 3 - LibraryIT](#soal-3---libraryit)  
+    - [Dockerfile](#dockerfile-1)  
+    - [entrypoint.sh](#entrypointsh)  
+    - [smb.conf](#smbconf)  
+    - [docker-compose.yml](#docker-composeyml)  
+    - [Uji Coba](#uji-coba-2)  
 
 ## Struktur Repository
 ![image](assets/struktur-repository.png)  
@@ -833,8 +839,8 @@ Lalu, jalankan dengan:
 ```
 ![image](assets/soal_2/client.png)
 
-notes:  
----
+### notes:  
+
 Untuk mematikan (Stop) sementara:  
 ```bash
 sudo docker stop db_app
@@ -858,3 +864,395 @@ sudo nano /etc/fuse.conf
 ```
 lalu cari tulisan `#user_allow_other`.  
 dan hapus tanda pagar (`#`) di depannya, dan coba container integration (bind mount) lagi.
+
+## Soal 3 - LibraryIT
+Pada soal ini kita sebagai System Administrator baru di IT Library diminta untuk membangun infrastruktur LibraryIT dari nol menggunakan Docker dan Samba.
+
+**NOTE:**
+```
+Mohon maaf sebelumnya dikarenakan pada soal ini masih terbilang belum sesuai dengan ekspektasi dan harapan yang diinginkan oleh pembuat soal sehingga terdapat error dan bug.
+```
+
+Beberapa file yang diperlukan, yakni:
+- docker-compose.yml
+- Dockerfile
+- entrypoint.sh
+- smb.conf
+
+### Dockerfile
+Dockerfile mendefinisikan image libraryit-server. Setiap instruksi dieksekusi saat docker compose build.
+```dockerfile
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    samba \
+    samba-common-bin \
+    && rm -rf /var/lib/apt/lists/*
+
+# Buat direktori data
+RUN mkdir -p /data/ebooks \
+             /data/papers \
+             /data/sourcecode \
+             /data/docs
+
+# Copy konfigurasi Samba
+COPY smb.conf /etc/samba/smb.conf
+
+# Copy entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 445 139
+
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+### entrypoint.sh
+Script ini adalah inti dari otomatisasi setup. Dijalankan setiap kali container dinyalakan. Menggunakan set -e sehingga akan berhenti jika ada perintah yang gagal.
+```sh
+#!/bin/bash
+set -e
+
+# Buat grup
+groupadd -f readonly
+groupadd -f staff
+
+# Buat user sistem + tambahkan ke grup
+create_user() {
+    local USERNAME=$1
+    local PASSWORD=$2
+    local GROUP=$3
+
+    if ! id "$USERNAME" &>/dev/null; then
+        useradd -M -s /sbin/nologin "$USERNAME"
+    fi
+    echo "$USERNAME:$PASSWORD" | chpasswd
+    usermod -aG "$GROUP" "$USERNAME"
+
+    # Daftarkan ke Samba
+    (echo "$PASSWORD"; echo "$PASSWORD") | smbpasswd -s -a "$USERNAME"
+    smbpasswd -e "$USERNAME"
+}
+
+create_user "member"      "member123"  "readonly"
+create_user "contributor" "contrib456" "staff"
+create_user "librarian"   "lib789"     "staff"
+
+# Set kepemilikan & permission direktori
+
+# ebooks: staff rw, readonly r
+chown root:staff /data/ebooks
+chmod 775 /data/ebooks
+
+# papers: staff rw, readonly r
+chown root:staff /data/papers
+chmod 775 /data/papers
+
+# sourcecode: hanya owner+grup staff, others tidak bisa sama sekali
+chown root:staff /data/sourcecode
+chmod 750 /data/sourcecode
+
+# docs: chown/chmod dilakukan oleh service 'setup' di docker-compose
+# karena di sini di-mount :ro — tidak bisa dimodifikasi dari dalam container
+
+# Setup log file
+LOG_FILE="/var/log/samba/libraryit.log"
+mkdir -p /var/log/samba
+touch "$LOG_FILE"
+chmod 644 "$LOG_FILE"
+
+# Jalankan Samba di foreground
+exec smbd --foreground --no-process-group --configfile=/etc/samba/smb.conf
+```
+**Fungsi create_user()**  
+Fungsi ini menerima tiga parameter: `USERNAME`, `PASSWORD`, dan `GROUP`. Fungsi ini dipanggil tiga kali: untuk member (grup readonly), contributor (grup staff), dan librarian (grup staff). Alur kerjanya:
+- Cek apakah user sudah ada (id "$USERNAME") untuk menghindari error duplikat saat container restart
+- useradd -M -s /sbin/nologin, buat user sistem tanpa home directory dan tanpa shell login (user hanya untuk Samba, bukan SSH/login lokal)
+- chpasswd, set password sistem (diperlukan oleh Samba untuk validasi)
+- usermod -aG $GROUP, tambahkan user ke grup yang ditentukan (-a berarti append, tidak menghapus grup lain)
+- smbpasswd -s -a, daftarkan user ke database Samba (passdb.tdb) secara non-interaktif (-s = silent, baca password dari stdin)
+- smbpasswd -e, aktifkan akun Samba (enable). Tanpa ini akun terdaftar tapi tidak bisa login  
+
+**Setup Grup**  
+groupadd -f readonly dan groupadd -f staff. Flag -f (force) mencegah error jika grup sudah ada saat container di-restart.
+
+**Setup Permission Direktori**  
+- /data/ebooks, root:staff, 775 (rwxrwxr-x)  
+Grup staff bisa baca+tulis, others (readonly) hanya baca.
+
+- /data/papers, root:staff, 775 (rwxrwxr-x)  
+Grup staff bisa baca+tulis, others (readonly) hanya baca.
+
+- /data/sourcecode, root:staff, 750 (rwxr-x---)  
+Others tidak punya permission sama sekali, dikuatkan lagi oleh invalid users di smb.conf.
+
+- /data/docs,  
+Di-mount :ro (readonly) sehingga tidak bisa di-chown dari dalam container, ditangani oleh service setup di docker-compose.
+
+### smb.conf
+File konfigurasi utama Samba. Terdiri dari satu blok `[global]` dan empat blok share.
+```conf
+[global]
+    workgroup = WORKGROUP
+    server string = LibraryIT Server
+    netbios name = libraryit-server
+    security = user
+    map to guest = Never
+    encrypt passwords = yes
+    smb ports = 445
+
+    # Logging ke file custom
+    log file = /var/log/samba/libraryit.log
+    log level = 1
+    max log size = 10240
+
+    # full_audit global defaults
+    full_audit:prefix = %u
+    full_audit:success = connect disconnect opendir mkdir rmdir open read pread write pwrite unlink renameat
+    full_audit:failure = connect opendir mkdir open read pread write pwrite unlink renameat
+    full_audit:facility = local7
+    full_audit:priority = notice
+
+[ebooks]
+    path = /data/ebooks
+    browseable = yes
+    read only = no
+    # staff bisa write, readonly hanya baca
+    write list = @staff
+    valid users = @staff @readonly
+    create mask = 0664
+    directory mask = 0775
+    vfs objects = full_audit
+
+[papers]
+    path = /data/papers
+    browseable = yes
+    read only = no
+    write list = @staff
+    valid users = @staff @readonly
+    create mask = 0664
+    directory mask = 0775
+    vfs objects = full_audit
+
+[sourcecode]
+    path = /data/sourcecode
+    # Tidak terlihat saat browsing share list
+    browseable = no
+    # Blokir semua user
+    invalid users = @staff @readonly member contributor librarian root
+    vfs objects = full_audit
+
+[docs]
+    path = /data/docs
+    browseable = yes
+    # Semua bisa baca, hanya librarian yang bisa tulis
+    read only = yes
+    write list = librarian
+    valid users = @staff @readonly
+    create mask = 0644
+    directory mask = 0755
+    vfs objects = full_audit 
+```
+
+### docker-compose.yml
+Mendefinisikan tiga service dengan urutan startup yang terkontrol, yakni:  
+`setup` → `libraryit-server` → `libraryit-logger`.
+```yml
+services:
+
+  # Service setup: buat direktori + atur permission di host, lalu exit
+  setup:
+    image: ubuntu:22.04
+    container_name: libraryit-setup
+    volumes:
+      - ./data:/data
+    command: >
+      bash -c "
+        mkdir -p /data/ebooks /data/papers /data/sourcecode /data/docs &&
+        chmod 775 /data/ebooks &&
+        chmod 775 /data/papers &&
+        chmod 750 /data/sourcecode &&
+        chmod 555 /data/docs &&
+        echo '[setup] Permission host siap.'
+      "
+    restart: "no"
+
+  libraryit-server:
+    build: .
+    container_name: libraryit-server
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    ports:
+      - "1445:445"
+    volumes:
+      - ./data/ebooks:/data/ebooks
+      - ./data/papers:/data/papers
+      - ./data/sourcecode:/data/sourcecode
+      - ./data/docs:/data/docs:ro     # docs: read-only dari host agar tidak bisa diubah langsung
+      - samba_logs:/var/log/samba     # libraryit-logger
+    restart: unless-stopped
+
+  libraryit-logger:
+    image: ubuntu:22.04
+    container_name: libraryit-logger
+    depends_on:
+      - libraryit-server
+    volumes:
+      - samba_logs:/var/log/samba:ro
+    # Monitor log Samba dan format ke:
+    # [YYYY-MM-DD HH:MM:SS] [LEVEL] [USERNAME] [AKSI] [NAMA FILE/SHARE]
+    command: >
+      bash -c "
+        LOG=/var/log/samba/libraryit.log;
+        echo '[logger] Waiting for log file...';
+        while [ ! -f \$$LOG ]; do sleep 1; done;
+        echo '[logger] Monitoring started.';
+        tail -F \$$LOG 2>/dev/null | while IFS= read -r line; do
+
+          # Filter hanya baris audit dari smbd
+          echo \"\$$line\" | grep -q 'smbd_audit:' || continue;
+
+          TIMESTAMP=\$$(date '+%Y-%m-%d %H:%M:%S');
+
+          # Format raw audit: smbd_audit: USER|IP|OP|RESULT|PATH
+          AUDIT=\$$(echo \"\$$line\" | sed 's/.*smbd_audit: //');
+          USER=\$$(echo \"\$$AUDIT\" | cut -d'|' -f1);
+          OP=\$$(echo \"\$$AUDIT\"   | cut -d'|' -f3 | tr '[:lower:]' '[:upper:]');
+          RESULT=\$$(echo \"\$$AUDIT\" | cut -d'|' -f4);
+          FPATH=\$$(echo \"\$$AUDIT\" | cut -d'|' -f5 | sed 's|.*/data/||');
+
+          # Tentukan LEVEL
+          case \"\$$RESULT\" in
+            ok|NT_STATUS_OK) LEVEL='INFO'    ;;
+            *)               LEVEL='WARNING' ;;
+          esac;
+
+          # Map nama operasi ke aksi yang mudah dibaca
+          case \"\$$OP\" in
+            CONNECT)          AKSI='CONNECT'    ;;
+            DISCONNECT)       AKSI='DISCONNECT' ;;
+            OPEN|PREAD|READ)  AKSI='READ'       ;;
+            WRITE|PWRITE)     AKSI='WRITE'      ;;
+            UNLINK)           AKSI='DELETE'     ;;
+            MKDIR)            AKSI='MKDIR'      ;;
+            RMDIR)            AKSI='RMDIR'      ;;
+            RENAMEAT|RENAME)  AKSI='RENAME'     ;;
+            OPENDIR)          AKSI='CONNECT'    ;;
+            *)                AKSI=\"\$$OP\"      ;;
+          esac;
+
+          # Gunakan nama share jika path kosong
+          [ -z \"\$$FPATH\" ] && FPATH=\$$(echo \"\$$AUDIT\" | cut -d'|' -f5 | tr -d ' ');
+
+          echo \"[\$$TIMESTAMP] [\$$LEVEL] [\$$USER] [\$$AKSI] [\$$FPATH]\";
+        done
+      "
+    restart: unless-stopped
+
+volumes:
+  samba_logs:
+    driver: local
+```
+**Service: setup**  
+Menggunakan image ubuntu:22.04 (tidak perlu build). Mount seluruh ./data ke /data tanpa :ro sehingga bisa menjalankan chmod. Menjalankan perintah bash -c satu kali untuk:  
+- mkdir -p — buat semua subdirektori koleksi di host jika belum ada
+- chmod 775 ebooks dan papers — grup dan others bisa baca, grup bisa tulis
+- chmod 750 sourcecode — others tidak punya akses sama sekali di level host
+- chmod 555 docs — read-only untuk semua di host; tidak bisa diubah langsung dari luar container
+
+**Service: libraryit-server**  
+Di-build dari Dockerfile lokal. Port 1445:445 memetakan port host 1445 ke port Samba 445 di container (menghindari konflik jika port 445 host sudah dipakai). Volume bind mount:  
+- ./data/ebooks, papers, sourcecode → /data/* di container: data persisten di host
+- ./data/docs → /data/docs:ro — read-only; mencegah modifikasi langsung dari host atau dari dalam container
+- samba_logs:/var/log/samba — named volume untuk berbagi file log dengan libraryit-logger
+
+**Service: libraryit-logger**  
+Service monitoring berbasis ubuntu:22.04. Mount named volume samba_logs dengan :ro (hanya baca). Menjalankan skrip shell untuk:  
+- Tunggu log file ada (while [ ! -f $LOG ]; do sleep 1; done) — handle race condition saat server baru start
+- tail -F untuk follow log secara real-time, termasuk jika file di-rotate
+- grep 'smbd_audit:' — filter hanya baris audit dari modul full_audit; abaikan baris startup Samba
+- sed + cut — ekstrak field USERNAME (kolom 1), OP (kolom 3), RESULT (kolom 4), PATH (kolom 5) dari format pipe-delimited full_audit
+- case statement LEVEL — ok/NT_STATUS_OK → INFO, lainnya → WARNING
+- case statement AKSI — map nama operasi internal Samba (OPEN, PWRITE, RENAMEAT, dll.) ke nama aksi yang lebih mudah dibaca (READ, WRITE, RENAME)
+- echo output berformat [TIMESTAMP] [LEVEL] [USERNAME] [AKSI] [PATH] — inilah yang muncul saat docker logs -f libraryit-logger
+
+### Uji Coba
+Untuk menjalankan program, gunakan:
+```bash
+sudo docker compose up -d --build
+```
+![image](assets/soal_3/docker-compose-build.png)
+
+Verifikasi status dengan:
+```bash
+sudo docker compose ps
+```
+![image](assets/soal_3/docker-compose-ps.png)
+
+Untuk menghentikan program tanpa menghapus data:
+```bash
+sudo docker compose down
+```
+
+Untuk menghentikan dan menghapus named volume log:
+```bash
+sudo docker compose down -v
+```
+
+Restart server saja:
+```bash
+sudo docker compose restart libraryit-server
+```
+
+Selanjutnya, memasuki test cases.  
+Cek user terbentuk + UID:
+```bash
+sudo docker exec -it libraryit-server pdbedit -L
+```
+![image](assets/soal_3/cek-user-terbentuk.png)
+
+Cek anggota grup staff dan readonly:
+```bash
+sudo docker exec -it libraryit-server getent group staff readonly
+```
+![image](assets/soal_3/cek-anggota-grup.png)
+
+Cek direktori koleksi:
+```bash
+sudo docker exec -it libraryit-server ls /data/
+```
+![image](assets/soal_3/cek-direktori-koleksi.png)
+
+Verifikasi akses user:
+```bash
+smbclient -L //localhost -p 1445 -U member%member123
+```
+![image](assets/soal_3/ver-akses-user.png)
+
+Verifikasi akses kontributor:
+```bash
+smbclient //localhost/docs -p 1445 -U contributor%contrib456
+```
+![image](assets/soal_3/ver-akses-contributor.png)
+
+Cek permission direktori di host:
+```bash
+ls -la ./data/
+```
+![image](assets/soal_3/cek-permission-direktori.png)
+
+Coba modifikasi docs langsung dari host:
+```bash
+touch ./data/docs/test_dari_host.txt
+```
+![image](assets/soal_3/cek-modify-docs.png)
+
+### notes:  
+
+Untuk menghapus docker images, gunakan:
+```bash
+sudo docker rmi NAMA_IMAGE
+```
