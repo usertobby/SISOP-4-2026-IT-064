@@ -866,12 +866,12 @@ lalu cari tulisan `#user_allow_other`.
 dan hapus tanda pagar (`#`) di depannya, dan coba container integration (bind mount) lagi.
 
 ## Soal 3 - LibraryIT
-Pada soal ini kita sebagai System Administrator baru di IT Library diminta untuk membangun infrastruktur LibraryIT dari nol menggunakan Docker dan Samba.
-
-**NOTE:**
-```
+**NOTE:**  
 Mohon maaf sebelumnya dikarenakan pada soal ini masih terbilang belum sesuai dengan ekspektasi dan harapan yang diinginkan oleh pembuat soal sehingga terdapat error dan bug.
-```
+
+---
+
+Pada soal ini kita sebagai System Administrator baru di IT Library diminta untuk membangun infrastruktur LibraryIT dari nol menggunakan Docker dan Samba.  
 
 Beberapa file yang diperlukan, yakni:
 - docker-compose.yml
